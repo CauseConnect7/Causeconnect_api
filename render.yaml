@@ -1,9 +1,64 @@
 services:
-  # A Docker web service
   - type: web
-    name: fastapi-example
+    name: causeconnect-api
     runtime: python
     plan: free
-    autoDeploy: false
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    autoDeploy: true
+    envVars:
+      # OpenAI API Key
+      - key: OPENAI_API_KEY
+        sync: false
+      
+      # MongoDB Connection
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB_NAME
+        sync: false
+      - key: MONGODB_COLLECTION_NONPROFIT
+        sync: false
+      - key: MONGODB_COLLECTION_FORPROFIT
+        sync: false
+      
+      # RapidAPI
+      - key: RAPIDAPI_KEY
+        sync: false
+      - key: RAPIDAPI_HOST
+        sync: false
+      
+      # Prompts
+      - key: PROMPT_GEN_ORG_SYSTEM
+        sync: false
+      - key: PROMPT_GEN_ORG_USER
+        sync: false
+      - key: PROMPT_FILTER_SYSTEM
+        sync: false
+      - key: PROMPT_FILTER_USER
+        sync: false
+      
+      # Tag Steps
+      - key: TAG_STEP_1
+        sync: false
+      - key: TAG_STEP_2
+        sync: false
+      - key: TAG_STEP_3
+        sync: false
+      - key: TAG_STEP_4
+        sync: false
+      - key: TAG_STEP_5
+        sync: false
+      - key: TAG_STEP_6
+        sync: false
+      
+      # Tag Generation Prompts
+      - key: PROMPT_TAGS_SYSTEM
+        sync: false
+      - key: PROMPT_TAGS_USER
+        sync: false
+      
+      # Match Evaluation Prompts
+      - key: MATCH_EVALUATION_SYSTEM_PROMPT
+        sync: false
+      - key: MATCH_EVALUATION_PROMPT
+        sync: false
