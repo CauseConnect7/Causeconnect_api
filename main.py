@@ -1,24 +1,29 @@
-"""
-Comprehensive API Testing Module
-"""
+# FastAPI 相关
 from fastapi import FastAPI, HTTPException
-from fastapi.testclient import TestClient
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+
+# 数据模型相关
 from pydantic import BaseModel, ConfigDict
 from typing import List, Dict, Optional, Any
+
+# AI 和数据处理
 import openai
-import pytest
-import sys
+import numpy as np
+from scipy.spatial.distance import cosine
+
+# 数据库相关
+from pymongo import MongoClient
+from bson.objectid import ObjectId
+
+# 环境和系统配置
 import os
 from pathlib import Path
-from config import get_test_config
-from utils import calculate_similarity
 from dotenv import load_dotenv
-from pymongo import MongoClient
-from scipy.spatial.distance import cosine
-import numpy as np
-from bson.objectid import ObjectId
+
+# 测试相关
+import pytest
+import sys
 
 # 加载环境变量
 load_dotenv()
