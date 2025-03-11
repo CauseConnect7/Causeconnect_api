@@ -1,29 +1,30 @@
+"""
+Comprehensive API Testing Module
+"""
 from fastapi import FastAPI, HTTPException
-from fastapi.testclient import TestClient
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-
-# 数据模型相关
 from pydantic import BaseModel, ConfigDict
 from typing import List, Dict, Optional, Any
-
-# AI 和数据处理
 import openai
-import numpy as np
-from scipy.spatial.distance import cosine
-
-# 数据库相关
-from pymongo import MongoClient
-from bson.objectid import ObjectId
-
-# 环境和系统配置
+import pytest
+import sys
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+from pymongo import MongoClient
+from scipy.spatial.distance import cosine
+import numpy as np
+from bson.objectid import ObjectId
 
-# 测试相关
-import pytest
-import sys
+# 在文件最开始，import之后
+print("Starting database connection check...")
+load_dotenv(verbose=True)  # 确保能看到环境变量加载过程
+
+# 打印环境变量值（注意隐藏敏感信息）
+print(f"MONGODB_DB_NAME: {os.getenv('MONGODB_DB_NAME')}")
+print(f"MONGODB_COLLECTION_NONPROFIT: {os.getenv('MONGODB_COLLECTION_NONPROFIT')}")
+print(f"MONGODB_COLLECTION_FORPROFIT: {os.getenv('MONGODB_COLLECTION_FORPROFIT')}")
 
 # 加载环境变量
 load_dotenv()
@@ -32,7 +33,7 @@ load_dotenv()
 current_dir = Path(__file__).parent
 sys.path.append(str(current_dir))
 
-# Create FastAPI app and test client
+# Create FastAPI app
 app = FastAPI(
     title="Organization Matching API",
     description="API for organization matching and tag generation",
@@ -45,7 +46,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-client = TestClient(app)
 
 # ----------- Define Structured Tagging Steps -----------
 STEP_DESCRIPTIONS = {
