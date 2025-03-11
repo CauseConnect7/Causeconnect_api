@@ -1,1 +1,31 @@
-fastapi[all]
+# API and Web Framework
+fastapi==0.104.1
+uvicorn==0.24.0
+
+# Database
+pymongo==4.6.0
+
+# AI and Machine Learning
+openai==2.8
+numpy==1.26.2
+scipy==1.11.4
+
+# Testing
+pytest==7.4.3
+httpx>=0.24.0
+
+# Data Validation
+pydantic==2.5.2
+python-multipart==0.0.6
+
+# Environment and Configuration
+python-dotenv==1.0.0
+
+# CORS Support
+starlette>=0.27.0
+
+# Web Client
+requests>=2.26.0
+
+# Optional - Streamlit (if you're using it)
+streamlit>=1.10.0 
