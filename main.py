@@ -127,7 +127,18 @@ class CompanyResponse(BaseModel):
     website_partnership: Optional[str] = None
     website_event: Optional[str] = None
     
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    class Config:
+        from_attributes = True
+        
+        @classmethod
+        def validate(cls, v):
+            if isinstance(v, dict):
+                # 转换整数字段为字符串
+                for field in ['Code', 'linkedin_staff_count', 'linkedin_follower_count', 
+                            'linkedin_postal_code', 'linkedin_phone']:
+                    if field in v and v[field] is not None:
+                        v[field] = str(v[field])
+            return v
 
 # Add error handling
 @app.exception_handler(Exception)
@@ -251,7 +262,7 @@ async def generate_tags_api(request: Dict):
         )
         
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -273,13 +284,18 @@ async def generate_tags_api(request: Dict):
 async def generate_embedding_api(request: Dict):
     """生成嵌入向量的API"""
     try:
-        if not request.get("text"):
-            raise HTTPException(status_code=400, detail="Missing text")
+        if "tags" not in request:
+            raise HTTPException(status_code=400, detail="Missing tags field")
             
-        openai.api_key = os.getenv("OPENAI_API_KEY")
+        tags = request["tags"]
+        if not tags:
+            raise HTTPException(status_code=400, detail="Tags cannot be empty")
+            
+        print(f"Generating embedding for: {tags}")
+            
         response = openai.Embedding.create(
             model="text-embedding-ada-002",
-            input=[request["text"]]
+            input=tags  # 直接使用字符串
         )
         
         return {
@@ -287,6 +303,7 @@ async def generate_embedding_api(request: Dict):
             "embedding": response["data"][0]["embedding"]
         }
     except Exception as e:
+        print(f"Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/test/generate/ideal-organizations")
@@ -336,6 +353,28 @@ async def generate_organizations_api(request: Dict):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+required_env_vars = [
+    "OPENAI_API_KEY",
+    "MONGODB_URI",
+    "MONGODB_DB_NAME",
+    "MONGODB_COLLECTION_NONPROFIT",
+    "MONGODB_COLLECTION_FORPROFIT",
+    "PROMPT_GEN_ORG_SYSTEM",
+    "PROMPT_GEN_ORG_USER",
+    "PROMPT_FILTER_SYSTEM",
+    "PROMPT_FILTER_USER",
+    "PROMPT_TAGS_SYSTEM",
+    "PROMPT_TAGS_USER",
+    "MATCH_EVALUATION_SYSTEM_PROMPT",
+    "MATCH_EVALUATION_PROMPT"
+]
+
+# 检查环境变量
+missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+if missing_vars:
+    raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
 @app.post("/test/find-matches")
 async def find_matches_api(request: Dict):
@@ -414,7 +453,7 @@ async def evaluate_match_api(request: Dict):
 async def complete_matching_process(request: Dict):
     """完整的匹配流程API"""
     try:
-        # 验证输入
+        # 1. 验证输入
         required_fields = [
             "Name", "Type", "Description", "Target Audience",
             "Organization looking 1", "Organization looking 2"
@@ -422,68 +461,183 @@ async def complete_matching_process(request: Dict):
         if not all(field in request for field in required_fields):
             raise HTTPException(status_code=400, detail="Missing required fields")
 
-        # 1. 生成理想组织
-        orgs_response = await generate_organizations_api(request)
+        # 2. 生成理想组织 (/test/generate/ideal-organizations)
+        orgs_response = await generate_organizations_api({
+            "Name": request["Name"],
+            "Type": request["Type"],
+            "Description": request["Description"],
+            "Organization looking 1": request["Organization looking 1"],
+            "Organization looking 2": request["Organization looking 2"]
+        })
         
-        # 2. 生成标签
+        if not orgs_response.get("filtered_organizations"):
+            raise HTTPException(status_code=500, detail="Failed to generate organizations")
+
+        # 3. 生成标签 (/test/generate/tags)
         tags_response = await generate_tags_api({
             "description": orgs_response["filtered_organizations"]
         })
         
-        # 3. 生成嵌入向量
-        if tags_response["tags_string"]:
-            embedding_response = await generate_embedding_api({
-                "text": tags_response["tags_string"]
-            })
-            
-            # 4. 查找匹配
-            collection = nonprofit_collection if request["Organization looking 1"].strip() == os.getenv("MONGODB_COLLECTION_NONPROFIT").strip() else forprofit_collection
-            
-            matches = []
-            for org in collection.find({"Embedding": {"$exists": True}}):
-                if org.get("Embedding"):
-                    # 处理 Embedding 字段
-                    org_embedding = np.frombuffer(org["Embedding"], dtype=np.float32)
-                    similarity = 1 - cosine(embedding_response["embedding"], org_embedding)
-                    
-                    # 处理数据转换
-                    org_dict = dict(org)
-                    org_dict["_id"] = str(org_dict["_id"])  # 转换 ObjectId 为字符串
-                    
-                    # 处理 Tag 字段
-                    if isinstance(org_dict.get("Tag"), str):
-                        org_dict["Tag"] = org_dict["Tag"].split(", ")
-                    elif org_dict.get("Tag") is None:
-                        org_dict["Tag"] = []
-                    
-                    # 处理 Embedding 字段
-                    if isinstance(org_dict.get("Embedding"), bytes):
-                        org_dict["Embedding"] = np.frombuffer(org_dict["Embedding"], dtype=np.float32).tolist()
-                    
-                    try:
-                        company_response = CompanyResponse(**org_dict)
-                        matches.append({
-                            "similarity": float(similarity),
-                            "organization": company_response.dict()
-                        })
-                    except Exception as e:
-                        print(f"Error processing organization: {str(e)}")
-                        continue
-            
-            # 排序并返回前20个匹配
-            matches.sort(key=lambda x: x["similarity"], reverse=True)
-            
-            return {
-                "status": "success",
-                "suggested_organizations": orgs_response["filtered_organizations"],
-                "tags": tags_response["tags_string"],
-                "matches": matches[:20]
-            }
-        else:
+        if not tags_response.get("tags"):
             raise HTTPException(status_code=500, detail="Failed to generate tags")
+
+        # 4. 生成嵌入向量 (/test/generate/embedding)
+        embedding_response = await generate_embedding_api({
+            "tags": tags_response["tags_string"]
+        })
+        
+        if not embedding_response.get("embedding"):
+            raise HTTPException(status_code=500, detail="Failed to generate embedding")
+
+        # 5. 查找匹配 (/test/find-matches)
+        matches_response = await find_matches_api({
+            "embedding": embedding_response["embedding"],
+            "looking_for_type": request["Organization looking 1"]
+        })
+
+        if not matches_response.get("matches"):
+            raise HTTPException(status_code=500, detail="No matches found")
+
+        # 6. 评估匹配
+        evaluated_matches = []  # 存储已评估且匹配的
+        unmatched = []  # 存储已评估但不匹配的
+        unevaluated_matches = []  # 存储剩余未评估的80个
+        final_matches = []
+        
+        # 处理前20个匹配
+        first_twenty = matches_response["matches"][:20]
+        remaining_matches = matches_response["matches"][20:]
+        
+        for match in first_twenty:
+            evaluation_request = {
+                "user_info": {
+                    "Type": request["Type"],
+                    "Description": request["Description"],
+                    "Target Audience": request["Target Audience"],
+                    "Organization looking 1": request["Organization looking 1"],
+                    "Organization looking 2": request["Organization looking 2"]
+                },
+                "match_info": match
+            }
+
+            evaluation = await evaluate_match_api(evaluation_request)
             
+            match_result = {
+                "similarity_score": float(match[0]),
+                "organization": {
+                    "name": match[1],
+                    "description": match[2],
+                    "url": match[3],
+                    "linkedin_description": match[4],
+                    "linkedin_tagline": match[5],
+                    "type": match[6],
+                    "industries": match[7],
+                    "specialities": match[8],
+                    "staff_count": match[9],
+                    "city": match[10],
+                    "state": match[11],
+                    "linkedin_url": match[12],
+                    "tags": match[13]
+                }
+            }
+
+            if evaluation.get("is_match"):
+                match_result["evaluation"] = {
+                    "is_match": True
+                }
+                evaluated_matches.append(match_result)
+            else:
+                match_result["evaluation"] = {
+                    "is_match": False
+                }
+                unmatched.append(match_result)
+
+        # 处理剩余80个未评估的匹配
+        for match in remaining_matches:
+            match_result = {
+                "similarity_score": float(match[0]),
+                "organization": {
+                    "name": match[1],
+                    "description": match[2],
+                    "url": match[3],
+                    "linkedin_description": match[4],
+                    "linkedin_tagline": match[5],
+                    "type": match[6],
+                    "industries": match[7],
+                    "specialities": match[8],
+                    "staff_count": match[9],
+                    "city": match[10],
+                    "state": match[11],
+                    "linkedin_url": match[12],
+                    "tags": match[13]
+                },
+                "evaluation": {
+                    "is_match": None,  # 表示未评估
+                    "note": "Not evaluated, ranked by similarity score"
+                }
+            }
+            unevaluated_matches.append(match_result)
+
+        # 构建最终的20个匹配
+        # 首先添加所有已评估且匹配的
+        final_matches = evaluated_matches.copy()
+        # 如果不够20个，从未评估的中按相似度补充
+        if len(final_matches) < 20:
+            remaining_needed = 20 - len(final_matches)
+            final_matches.extend(unevaluated_matches[:remaining_needed])
+
+        return {
+            "status": "success",
+            "process_steps": {
+                "step1_input_organization": {
+                    "name": request["Name"],
+                    "type": request["Type"],
+                    "description": request["Description"],
+                    "target_audience": request["Target Audience"],
+                    "looking_for": request["Organization looking 1"],
+                    "partnership_description": request["Organization looking 2"]
+                },
+                "step2_suggested_organizations": {
+                    "generated": orgs_response["generated_organizations"],
+                    "filtered": orgs_response["filtered_organizations"]
+                },
+                "step3_generated_tags": {
+                    "tags": tags_response["tags"],
+                    "tags_string": tags_response["tags_string"]
+                },
+                "step4_embedding": {
+                    "dimension": len(embedding_response["embedding"]),
+                    "embedding_sample": embedding_response["embedding"][:5]
+                },
+                "step5_initial_matches": {
+                    "total_matches_found": len(matches_response["matches"]),
+                    "matches_processed": 20
+                },
+                "step6_match_evaluation": {
+                    "total_matches_found": len(matches_response["matches"]),
+                    "evaluated_count": 20,
+                    "matched_count": len(evaluated_matches),
+                    "unmatched_count": len(unmatched),
+                    "unevaluated_count": 80,
+                    "final_matches_count": 20
+                }
+            },
+            "matching_results": {
+                "successful_matches": evaluated_matches,
+                "remaining_matches": unevaluated_matches,
+                "final_twenty_matches": final_matches
+            }
+        }
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500, 
+            detail={
+                "error": str(e),
+                "step": "complete_matching_process",
+                "message": "Error in matching process"
+            }
+        )
 
 @app.get("/test/company/{company_id}")
 async def get_company_details(company_id: str):
@@ -612,49 +766,6 @@ def generate_structured_tags(description: str) -> Dict:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating structured tags: {str(e)}")
 
-@app.post("/test/filter-organizations")
-async def filter_organizations(request: Dict):
-    """过滤组织API"""
-    try:
-        if not all(key in request for key in ["generated_organizations", "organization_mission"]):
-            raise HTTPException(status_code=400, detail="Missing required fields")
-            
-        response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": os.getenv("PROMPT_FILTER_SYSTEM")},
-                {"role": "user", "content": os.getenv("PROMPT_FILTER_USER").format(
-                    organization_mission=request["organization_mission"],
-                    generated_organizations=request["generated_organizations"]
-                )}
-            ]
-        )
-        
-        return {"filtered_organizations": response.choices[0]['message']['content'].strip()}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# 只保留 search2.py 中使用的环境变量检查
-required_env_vars = [
-    "OPENAI_API_KEY",
-    "MONGODB_URI",
-    "MONGODB_DB_NAME",
-    "MONGODB_COLLECTION_NONPROFIT",
-    "MONGODB_COLLECTION_FORPROFIT",
-    "PROMPT_GEN_ORG_SYSTEM",
-    "PROMPT_GEN_ORG_USER",
-    "PROMPT_FILTER_SYSTEM",
-    "PROMPT_FILTER_USER",
-    "PROMPT_TAGS_SYSTEM",
-    "PROMPT_TAGS_USER",
-    "MATCH_EVALUATION_SYSTEM_PROMPT",
-    "MATCH_EVALUATION_PROMPT"
-]
-
-# 检查环境变量
-missing_vars = [var for var in required_env_vars if not os.getenv(var)]
-if missing_vars:
-    raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
 @app.post("/test/analyze/match-reasons")
 async def analyze_match_reasons(request: Dict):
