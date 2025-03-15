@@ -16,6 +16,9 @@ from pymongo import MongoClient
 from scipy.spatial.distance import cosine
 import numpy as np
 from bson.objectid import ObjectId
+from string import Template
+import requests
+import json
 
 # 在文件最开始，import之后
 print("Starting database connection check...")
@@ -139,6 +142,15 @@ class CompanyResponse(BaseModel):
                     if field in v and v[field] is not None:
                         v[field] = str(v[field])
             return v
+
+class AdCampaignRequest(BaseModel):
+    user_org: Dict[str, Any]
+    match_org: Dict[str, Any]
+
+class AdCampaignResponse(BaseModel):
+    ad_copy: str
+    visual_prompt: str
+    image: Dict[str, str]
 
 # Add error handling
 @app.exception_handler(Exception)
@@ -586,7 +598,55 @@ async def complete_matching_process(request: Dict):
             remaining_needed = 20 - len(final_matches)
             final_matches.extend(unevaluated_matches[:remaining_needed])
 
-        return {
+        matching_results = {
+            "successful_matches": [
+                {
+                    "similarity_score": match.get("similarity_score"),
+                    "organization": {
+                        # 基础信息
+                        "name": match.get("organization", {}).get("name"),
+                        "description": match.get("organization", {}).get("description"),
+                        "address": match.get("organization", {}).get("address"),
+                        "city": match.get("organization", {}).get("city"),
+                        "state": match.get("organization", {}).get("state"),
+                        "code": match.get("organization", {}).get("code"),
+                        "url": match.get("organization", {}).get("url"),
+                        
+                        # LinkedIn 信息
+                        "linkedin_url": match.get("organization", {}).get("linkedin_url"),
+                        "linkedin_tagline": match.get("organization", {}).get("linkedin_tagline"),
+                        "linkedin_type": match.get("organization", {}).get("type"),
+                        "linkedin_industries": match.get("organization", {}).get("industries"),
+                        "linkedin_specialities": match.get("organization", {}).get("specialities"),
+                        "linkedin_staff_range": match.get("organization", {}).get("staff_range"),
+                        "linkedin_follower_count": match.get("organization", {}).get("follower_count"),
+                        "linkedin_logo": match.get("organization", {}).get("logo"),
+                        "linkedin_crunchbase": match.get("organization", {}).get("crunchbase"),
+                        
+                        # 财务信息
+                        "assets_usd": match.get("organization", {}).get("assets_usd"),
+                        "employees_total": match.get("organization", {}).get("employees_total"),
+                        "pre_tax_profit_usd": match.get("organization", {}).get("pre_tax_profit_usd"),
+                        "sales_usd": match.get("organization", {}).get("sales_usd"),
+                        
+                        # 根据组织类型的特定字段
+                        **({"contribution": match.get("organization", {}).get("contribution"),
+                            "csr_page_link": match.get("organization", {}).get("csr_page_link")} 
+                           if match.get("organization", {}).get("type") == "For-Profit" else
+                           {"partnership": match.get("organization", {}).get("partnership"),
+                            "website_event": match.get("organization", {}).get("website_event"),
+                            "website_partnership": match.get("organization", {}).get("website_partnership"),
+                            "event": match.get("organization", {}).get("event")})
+                    },
+                    "evaluation": {
+                        "is_match": match.get("evaluation", {}).get("is_match", True)
+                    }
+                }
+                for match in final_matches
+            ]
+        }
+        
+        response = {
             "status": "success",
             "process_steps": {
                 "step1_input_organization": {
@@ -622,12 +682,10 @@ async def complete_matching_process(request: Dict):
                     "final_matches_count": 20
                 }
             },
-            "matching_results": {
-                "successful_matches": evaluated_matches,
-                "remaining_matches": unevaluated_matches,
-                "final_twenty_matches": final_matches
-            }
+            "matching_results": matching_results
         }
+        
+        return response
 
     except Exception as e:
         raise HTTPException(
@@ -643,22 +701,40 @@ async def complete_matching_process(request: Dict):
 async def get_company_details(company_id: str):
     """Get company details from database."""
     try:
-        # 首先在 nonprofit 集合中查找
-        company = nonprofit_collection.find_one({"_id": ObjectId(company_id)})
+        # 直接验证和转换为 ObjectId
+        try:
+            object_id = ObjectId(company_id)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid ObjectId format. Must be a 24-character hex string."
+            )
+
+        # 在两个集合中查找
+        company = nonprofit_collection.find_one({"_id": object_id})
+        collection_type = "Non Profit"
+        
         if not company:
-            # 如果没找到，在 forprofit 集合中查找
-            company = forprofit_collection.find_one({"_id": ObjectId(company_id)})
+            company = forprofit_collection.find_one({"_id": object_id})
+            collection_type = "For-Profit"
         
         if company:
             # 转换 ObjectId 为字符串
             company["_id"] = str(company["_id"])
-            # 转换 Binary Embedding 为列表（如果存在）
+            company["organization_type"] = collection_type
+            
+            # 转换 Embedding 如果存在
             if "Embedding" in company:
                 company["Embedding"] = np.frombuffer(company["Embedding"], dtype=np.float32).tolist()
             return company
         else:
-            raise HTTPException(status_code=404, detail="Company not found")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Company not found"
+            )
             
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -704,34 +780,109 @@ def test_generate_embedding():
         raise
 
 def test_complete_matching():
-    """Test complete matching"""
-    try:
-        request = {
-            "embedding": [0.1] * 1536,
-            "filters": {
-                "type": "Non Profit",
-                "state": "California"
-            }
-        }
-        response = client.post("/test/match", json=request)
-        assert response.status_code == 200
-        data = response.json()
-        assert "matches" in data
-    except Exception as e:
-        print(f"Complete matching error: {str(e)}")
-        raise
+    example_data = {
+        "Name": "Healthy Food Co",
+        "Type": "For-Profit",
+        "Description": "We provide organic and healthy food solutions",
+        "Target Audience": "Health-conscious consumers",
+        "Organization looking 1": "Non Profit",
+        "Organization looking 2": "Looking for partnership with health education organizations"
+    }
 
-def test_company_details():
-    """Test company details"""
+    # 定义字段映射关系
+    field_mapping = {
+        # 通用字段
+        "common_fields": {
+            "Name": "name",
+            "Description": "description",
+            "URL": "url",
+            "City": "city",
+            "State": "state",
+            "Address": "address",
+            "Code": "code",
+            "linkedin_description": "linkedin_description",
+            "linkedin_follower_count": "follower_count",
+            "linkedin_industries": "industries",
+            "linkedin_logo": "logo",
+            "linkedin_specialities": "specialities",
+            "linkedin_staff_range": "staff_range",
+            "linkedin_tagline": "tagline",
+            "linkedin_type": "type",
+            "linkedin_url": "linkedin_url",
+            "Assets (USD)": "assets",
+            "Employees (Total)": "employees",
+            "Pre Tax Profit (USD)": "pre_tax_profit",
+            "Sales (USD)": "sales",
+            "_id": "_id"
+        },
+        # 营利组织特有字段
+        "for_profit_only": {
+            "contribution": "contribution",
+            "csr_page_link": "csr_page_link"
+        },
+        # 非营利组织特有字段
+        "non_profit_only": {
+            "partnership": "partnership",
+            "website_event": "website_event",
+            "website_partnership": "website_partnership",
+            "event": "event"
+        }
+    }
+
     try:
-        company_id = "67ba70f5f8bfb6dcb4492281"
-        response = client.get(f"/test/company/{company_id}")
-        assert response.status_code == 200
+        response = requests.post(
+            f"{API_BASE_URL}/test/complete-matching-process",
+            headers={"Content-Type": "application/json"},
+            json=example_data
+        )
+        
         data = response.json()
-        assert data["company_id"] == company_id
-    except Exception as e:
-        print(f"Company details error: {str(e)}")
-        raise
+        
+        # 分析每个匹配的组织
+        print("\nAnalyzing matches:")
+        for match in data.get("matches", []):
+            org = match.get("organization", {})
+            org_type = org.get("type")
+            
+            print(f"\nOrganization: {org.get('name')}")
+            print(f"Type: {org_type}")
+            print(f"Similarity Score: {match.get('similarity_score')}")
+            
+            # 检查通用字段
+            print("\nCommon Fields:")
+            for db_field, api_field in field_mapping["common_fields"].items():
+                value = org.get(api_field)
+                print(f"{db_field}: {'Present' if value is not None else 'Missing'}")
+            
+            # 检查类型特定字段
+            if org_type == "For-Profit":
+                print("\nFor-Profit Specific Fields:")
+                for db_field, api_field in field_mapping["for_profit_only"].items():
+                    value = org.get(api_field)
+                    print(f"{db_field}: {'Present' if value is not None else 'Missing'}")
+            else:
+                print("\nNon-Profit Specific Fields:")
+                for db_field, api_field in field_mapping["non_profit_only"].items():
+                    value = org.get(api_field)
+                    print(f"{db_field}: {'Present' if value is not None else 'Missing'}")
+            
+            # 统计字段覆盖率
+            total_fields = len(field_mapping["common_fields"])
+            present_fields = sum(1 for field in field_mapping["common_fields"].values() if org.get(field) is not None)
+            
+            if org_type == "For-Profit":
+                total_fields += len(field_mapping["for_profit_only"])
+                present_fields += sum(1 for field in field_mapping["for_profit_only"].values() if org.get(field) is not None)
+            else:
+                total_fields += len(field_mapping["non_profit_only"])
+                present_fields += sum(1 for field in field_mapping["non_profit_only"].values() if org.get(field) is not None)
+            
+            print(f"\nField Coverage: {present_fields}/{total_fields} ({(present_fields/total_fields)*100:.2f}%)")
+        
+        return data
+    except Exception as error:
+        print("Error:", error)
+        return None
 
 def generate_structured_tags(description: str) -> Dict:
     """生成结构化标签"""
@@ -769,51 +920,153 @@ def generate_structured_tags(description: str) -> Dict:
 
 @app.post("/test/analyze/match-reasons")
 async def analyze_match_reasons(request: Dict):
-    """分析匹配理由的API"""
+    """Generate detailed matching analysis report in three stages"""
     try:
-        if not all(key in request for key in ["user_org", "match_org"]):
-            raise HTTPException(status_code=400, detail="Missing required fields")
-            
+        # 基础验证
+        if not os.getenv("OPENAI_API_KEY"):
+            raise HTTPException(status_code=500, detail="OPENAI_API_KEY not found")
         openai.api_key = os.getenv("OPENAI_API_KEY")
         
-        prompt = f"""
-        Based on the following information, explain why these organizations would be good partners:
+        # 获取组织数据
+        match_org_id = ObjectId(request["match_org"].get("_id"))
+        detailed_org = nonprofit_collection.find_one({"_id": match_org_id})
+        org_type = "Non-Profit"
         
-        User Organization:
-        - Description: {request["user_org"].get('Description', 'N/A')}
-        - Target Audience: {request["user_org"].get('Target Audience', 'N/A')}
-        
-        Potential Partner:
-        - Name: {request["match_org"].get('name', 'N/A')}
-        - Description: {request["match_org"].get('description', 'N/A')}
-        - Type: {request["match_org"].get('type', 'N/A')}
-        - Industries: {request["match_org"].get('industries', 'N/A')}
-        - Specialties: {request["match_org"].get('specialities', 'N/A')}
-        
-        Please provide 2-3 key points about why this would be a good partnership.
-        Focus on:
-        1. Strategic alignment and shared values
-        2. Complementary capabilities and resources
-        3. Market and audience synergies
-        
-        Format your response in clear, concise bullet points.
+        if not detailed_org:
+            detailed_org = forprofit_collection.find_one({"_id": match_org_id})
+            org_type = "For-Profit"
+            
+        if not detailed_org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+
+        # 第一阶段：价值匹配分析
+        alignment_analysis_prompt = f"""
+        Analyze value alignment between {detailed_org.get('Name')} and {request['user_org'].get('Name')}:
+
+        Organization Identity:
+        - About: {detailed_org.get('about')}
+        - LinkedIn Description: {detailed_org.get('linkedin_description')}
+        - LinkedIn Tagline: {detailed_org.get('linkedin_tagline')}
+        - Industries: {detailed_org.get('linkedin_industries')}
+        - Specialties: {detailed_org.get('linkedin_specialities')}
+        - Description: {detailed_org.get('Description')}
+
+        Provide analysis in JSON format focusing on:
+        1. Strategic alignment of missions
+        2. Value proposition compatibility
+        3. Market positioning alignment
         """
-        
+
+        # 第二阶段：活动模式分析
+        activity_analysis_prompt = f"""
+        Analyze activity patterns and focus areas:
+
+        {'Corporate Social Responsibility:' if org_type == "For-Profit" else 'Partnership History:'}
+        {detailed_org.get('contribution') if org_type == "For-Profit" else detailed_org.get('partnership')}
+
+        Activity Records:
+        - Events: {detailed_org.get('event')}
+        - Partnership Programs: {detailed_org.get('website_partnership')}
+        - Event Programs: {detailed_org.get('website_event')}
+        - CSR Programs: {detailed_org.get('csr_page_link')}
+
+        Focus Areas:
+        - Industries: {detailed_org.get('linkedin_industries')}
+        - Specialties: {detailed_org.get('linkedin_specialities')}
+        - Description: {detailed_org.get('Description')}
+
+        Provide JSON analysis of:
+        1. Primary Focus Areas
+        2. Partnership Style
+        3. Activity Patterns
+        """
+
+        # 第三阶段：能力评估
+        capability_analysis_prompt = f"""
+        Analyze organizational capabilities:
+
+        Scale Metrics:
+        - Staff Count: {detailed_org.get('linkedin_staff_count')}
+        - Staff Range: {detailed_org.get('linkedin_staff_range')}
+        - Total Employees: {detailed_org.get('Employees (Total)')}
+        - Location: {detailed_org.get('City')}, {detailed_org.get('State')}
+
+        Financial Indicators:
+        - Annual Sales: {detailed_org.get('Sales (USD)')}
+        - Assets: {detailed_org.get('Assets (USD)')}
+        - Pre Tax Profit: {detailed_org.get('Pre Tax Profit (USD)')}
+        - Market Presence: {detailed_org.get('linkedin_follower_count')} LinkedIn followers
+
+        Provide JSON analysis of:
+        1. Resource Capacity
+        2. Implementation Capability
+        3. Partnership Readiness
+        """
+
+        # 执行三阶段分析
+        try:
+            # 阶段1：价值匹配分析
+            alignment_response = await get_openai_analysis(
+                alignment_analysis_prompt,
+                "You are an expert in analyzing organizational value alignment."
+            )
+
+            # 阶段2：活动模式分析
+            activity_response = await get_openai_analysis(
+                activity_analysis_prompt,
+                "You are an expert in analyzing organizational activities and patterns."
+            )
+
+            # 阶段3：能力评估
+            capability_response = await get_openai_analysis(
+                capability_analysis_prompt,
+                "You are an expert in assessing organizational capabilities."
+            )
+
+            # 返回完整分析
+            return {
+                "status": "success",
+                "match_analysis": {
+                    "value_alignment": alignment_response,
+                    "activity_pattern": activity_response,
+                    "capability_assessment": capability_response
+                }
+            }
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Analysis error: {str(e)}"
+            )
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error: {str(e)}"
+        )
+
+async def get_openai_analysis(prompt: str, system_role: str) -> dict:
+    """Helper function for OpenAI API calls"""
+    try:
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are an expert in analyzing organizational partnerships."},
+                {"role": "system", "content": system_role},
                 {"role": "user", "content": prompt}
             ]
         )
-        
-        return {
-            "status": "success",
-            "analysis": response.choices[0].message['content'].strip()
-        }
-        
+        return json.loads(response.choices[0].message['content'])
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to parse analysis response"
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"OpenAI API error: {str(e)}"
+        )
 
 @app.post("/test/analyze/match-risks")
 async def analyze_match_risks(request: Dict):
@@ -828,15 +1081,15 @@ async def analyze_match_risks(request: Dict):
         Based on the following information, identify potential risks or challenges in this partnership:
         
         User Organization:
-        - Description: {request["user_org"].get('Description', 'N/A')}
-        - Target Audience: {request["user_org"].get('Target Audience', 'N/A')}
+        - Description: {request["user_org"].get('Description')}
+        - Target Audience: {request["user_org"].get('Target Audience')}
         
         Potential Partner:
-        - Name: {request["match_org"].get('name', 'N/A')}
-        - Description: {request["match_org"].get('description', 'N/A')}
-        - Type: {request["match_org"].get('type', 'N/A')}
-        - Industries: {request["match_org"].get('industries', 'N/A')}
-        - Specialties: {request["match_org"].get('specialities', 'N/A')}
+        - Name: {request["match_org"].get('name')}
+        - Description: {request["match_org"].get('description')}
+        - Type: {request["match_org"].get('type')}
+        - Industries: {request["match_org"].get('industries')}
+        - Specialties: {request["match_org"].get('specialities')}
         
         Please provide 2-3 key points about potential risks or challenges to consider.
         Focus on:
@@ -863,5 +1116,266 @@ async def analyze_match_risks(request: Dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/test/generate/ad-campaign", response_model=AdCampaignResponse)
+async def generate_ad_campaign(request: AdCampaignRequest):
+    """生成广告活动的API"""
+    try:
+        # 设置OpenAI API key
+        openai.api_key = os.getenv("OPENAI_API_KEY")
+        
+        # 打印用户输入数据
+        print("User Organization Input:")
+        print(json.dumps(request.user_org, indent=2))
+        
+        # 获取匹配组织
+        match_org_id = request.match_org.get("_id")
+        try:
+            object_id = ObjectId(match_org_id)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid ObjectId format"
+            )
+
+        # 在数据库中查找
+        match_org = nonprofit_collection.find_one({"_id": object_id})
+        collection_type = "Non Profit"
+        
+        if not match_org:
+            match_org = forprofit_collection.find_one({"_id": object_id})
+            collection_type = "For-Profit"
+            
+        if not match_org:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Company not found"
+            )
+            
+        # 打印数据库获取的组织数据
+        print("\nMatched Organization from Database:")
+        print(json.dumps({
+            "Name": match_org.get("Name"),
+            "Description": match_org.get("Description"),
+            "linkedin_industries": match_org.get("linkedin_industries"),
+            "linkedin_specialities": match_org.get("linkedin_specialities"),
+            "linkedin_description": match_org.get("linkedin_description"),
+            "linkedin_tagline": match_org.get("linkedin_tagline"),
+            "type": collection_type
+        }, indent=2))
+
+        # 生成广告文案
+        ad_copy = generate_ad_copy(request.user_org, match_org)
+        print("\nGenerated Ad Copy:")
+        print(ad_copy)
+        
+        if not ad_copy or ad_copy == "Unable to generate ad copy at this time.":
+            raise HTTPException(status_code=500, detail="Failed to generate ad copy")
+            
+        # 生成视觉提示
+        visual_prompt = generate_visual_prompt(ad_copy, request.user_org, match_org)
+        print("\nGenerated Visual Prompt:")
+        print(visual_prompt)
+        
+        if not visual_prompt or visual_prompt == "Unable to generate visual recommendations at this time.":
+            raise HTTPException(status_code=500, detail="Failed to generate visual prompt")
+            
+        # 生成图片
+        image_result = generate_image(ad_copy, request.user_org, match_org)
+        if 'error' in image_result:
+            raise HTTPException(status_code=500, detail=f"Failed to generate image")
+            
+        return AdCampaignResponse(
+            ad_copy=ad_copy,
+            visual_prompt=visual_prompt,
+            image=image_result
+        )
+        
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        print(f"Error in generate_ad_campaign: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def get_completion(prompt, is_visual=False):
+    """调用OpenAI API获取回复"""
+    try:
+        system_content = os.getenv("AD_SYSTEM_ROLE")
+        if is_visual:
+            system_content += "\nIMPORTANT: You MUST use the exact headline, description, and visual style provided in the prompt. Do not create new content. Only provide layout and design instructions for the given content."
+        
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "I will only use the provided content and ensure all variables are properly replaced."}
+            ],
+            temperature=0.7,
+            max_tokens=500
+        )
+        
+        content = response.choices[0].message['content']
+        
+        # 如果是视觉提示，验证是否包含必需的部分
+        if is_visual and not all(section in content for section in [
+            "### Layout Composition and Logo Placement",
+            "### Color Palette and Mood",
+            "### Typography",
+            "### Visual Elements and Imagery",
+            "### Visual Hierarchy"
+        ]):
+            raise ValueError("Response missing required sections")
+            
+        return content
+    except Exception as e:
+        print(f"Error calling OpenAI API: {str(e)}")
+        return "Unable to generate content at this time."
+
+def generate_ad_copy(user_org, match_org):
+    """Generate AI-based ad copy for partnership announcement"""
+    try:
+        # 确保所有字段都有值，如果不存在则使用空字符串
+        required_fields = {
+            "user_org_name": user_org.get("Name", ""),
+            "user_org_type": user_org.get("Type", ""),
+            "user_org_desc": user_org.get("Description", ""),
+            "match_org_name": match_org.get("Name", ""),
+            "match_org_type": match_org.get("type", ""),
+            "match_org_industry": match_org.get("linkedin_industries", ""),
+            "match_org_specialties": match_org.get("linkedin_specialities", ""),
+            "match_org_linkedin_desc": match_org.get("linkedin_description", ""),
+            "match_org_tagline": match_org.get("linkedin_tagline", ""),
+            "audience": user_org.get("Target Audience", "")
+        }
+        
+        # 打印调试信息
+        print("Debug - Template variables before replacement:")
+        print(json.dumps(required_fields, indent=2))
+        
+        # 使用模板替换
+        prompt_template = Template(os.getenv("PARTNERSHIP_AD_COPY_PROMPT"))
+        prompt = prompt_template.safe_substitute(required_fields)
+        
+        # 添加额外的提醒
+        prompt = f"""IMPORTANT: Use EXACTLY these organization names:
+1. User Organization: {required_fields['user_org_name']}
+2. Partner Organization: {required_fields['match_org_name']}
+
+{prompt}"""
+        
+        response = get_completion(prompt)
+        return response
+        
+    except Exception as e:
+        print(f"Error generating ad copy: {str(e)}")
+        return "Unable to generate ad copy at this time."
+
+def generate_visual_prompt(ad_copy, user_org, match_org):
+    """Generate visual prompt based on ad copy and partnership details"""
+    try:
+        # 解析广告文案中的各个部分
+        sections = {
+            'headline': '',
+            'description': '',
+            'visual_style': ''
+        }
+        
+        current_section = None
+        for line in ad_copy.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+                
+            if line.startswith('HEADLINE:'):
+                current_section = 'headline'
+                sections['headline'] = line.replace('HEADLINE:', '').strip()
+            elif line.startswith('DESCRIPTION:'):
+                current_section = 'description'
+                sections['description'] = line.replace('DESCRIPTION:', '').strip()
+            elif line.startswith('VISUAL_STYLE:'):
+                current_section = 'visual_style'
+                sections['visual_style'] = line.replace('VISUAL_STYLE:', '').strip()
+            elif current_section and not line.startswith('CTA_TAGS:'):
+                sections[current_section] += ' ' + line
+        
+        # 准备模板变量
+        template_vars = {
+            "headline": sections['headline'],
+            "description": sections['description'],
+            "visual_style": sections['visual_style'],
+            "user_org_name": user_org.get("Name", ""),
+            "user_org_type": user_org.get("Type", ""),
+            "user_org_desc": user_org.get("Description", ""),
+            "match_org_name": match_org.get("Name", ""),
+            "match_org_type": match_org.get("type", "For-Profit"),
+            "match_org_industries": match_org.get("linkedin_industries", ""),
+            "match_org_specialties": match_org.get("linkedin_specialities", ""),
+            "match_org_tagline": match_org.get("linkedin_tagline", "")
+        }
+
+        # 使用Template进行替换
+        prompt_template = Template(os.getenv("VISUAL_PROMPT_TEMPLATE"))
+        prompt = prompt_template.safe_substitute(template_vars)
+        
+        response = get_completion(prompt, is_visual=True)
+        
+        # 确保所有变量都被替换
+        final_response = response
+        for key, value in template_vars.items():
+            final_response = final_response.replace(f"{{{key}}}", value)
+            final_response = final_response.replace(f'"{{{key}}}"', f'"{value}"')
+            final_response = final_response.replace(f"[{key}]", value)
+            
+        # 特别处理引号内的变量
+        final_response = final_response.replace('"{headline}"', f'"{sections["headline"]}"')
+        final_response = final_response.replace('"{description}"', f'"{sections["description"]}"')
+        final_response = final_response.replace('{visual_style}', sections['visual_style'])
+        
+        return final_response
+        
+    except Exception as e:
+        print(f"Error generating visual prompt: {str(e)}")
+        return "Unable to generate visual recommendations at this time."
+
+def generate_image(ad_copy, user_org, match_org):
+    """Generate image using Ideogram API"""
+    try:
+        api_key = os.getenv("IDEOGRAM_API_KEY")
+        if not api_key:
+            raise ValueError("Ideogram API key not found in environment variables")
+            
+        response = requests.post(
+            os.getenv("IDEOGRAM_API_ENDPOINT"),
+            headers={
+                "Api-Key": api_key,
+                "Content-Type": "application/json"
+            },
+            json={
+                "image_request": {
+                    "prompt": generate_visual_prompt(ad_copy, user_org, match_org),
+                    "aspect_ratio": os.getenv("IDEOGRAM_IMAGE_ASPECT_RATIO"),
+                    "model": os.getenv("IDEOGRAM_MODEL_VERSION"),
+                    "magic_prompt_option": "ON",
+                    "color_palette": {
+                        "name": os.getenv("IDEOGRAM_COLOR_PALETTE")
+                    }
+                }
+            }
+        )
+        
+        if response.status_code != 200:
+            raise Exception(f"API request failed with status code {response.status_code}: {response.text}")
+            
+        response_data = response.json()
+        if not response_data.get('data') or not response_data['data'][0].get('url'):
+            raise Exception("No image URL found in API response")
+            
+        return {"url": response_data['data'][0]['url']}
+    except Exception as e:
+        print(f"Error generating image: {str(e)}")
+        return {"error": str(e)}
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"]) 
+    
