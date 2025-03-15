@@ -27,5 +27,14 @@ starlette>=0.27.0
 # Web Client
 requests>=2.26.0
 
+# JSON Processing
+json5>=0.9.14
+
+# Type Hints
+typing-extensions>=4.7.1
+
+# Async Support
+aiohttp>=3.8.5
+
 # Optional - Streamlit (if you're using it)
 streamlit>=1.10.0 
