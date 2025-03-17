@@ -455,6 +455,226 @@ async def evaluate_match_api(request: Dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 # 高层整合API
+@app.post("/test/complete-matching-process-new")
+async def complete_matching_process(request: Dict):
+    """完整的匹配流程API"""
+    try:
+        # 1. 验证输入
+        required_fields = [
+            "Name", "Type", "Description", "Target Audience",
+            "Organization looking 1", "Organization looking 2"
+        ]
+        if not all(field in request for field in required_fields):
+            raise HTTPException(status_code=400, detail="Missing required fields")
+
+        # 2. 生成理想组织 (/test/generate/ideal-organizations)
+        orgs_response = await generate_organizations_api({
+            "Name": request["Name"],
+            "Type": request["Type"],
+            "Description": request["Description"],
+            "Organization looking 1": request["Organization looking 1"],
+            "Organization looking 2": request["Organization looking 2"]
+        })
+        
+        if not orgs_response.get("filtered_organizations"):
+            raise HTTPException(status_code=500, detail="Failed to generate organizations")
+
+        # 3. 生成标签 (/test/generate/tags)
+        tags_response = await generate_tags_api({
+            "description": orgs_response["filtered_organizations"]
+        })
+        
+        if not tags_response.get("tags"):
+            raise HTTPException(status_code=500, detail="Failed to generate tags")
+
+        # 4. 生成嵌入向量 (/test/generate/embedding)
+        embedding_response = await generate_embedding_api({
+            "tags": tags_response["tags_string"]
+        })
+        
+        if not embedding_response.get("embedding"):
+            raise HTTPException(status_code=500, detail="Failed to generate embedding")
+
+        # 5. 查找匹配 (/test/find-matches)
+        matches_response = await find_matches_api({
+            "embedding": embedding_response["embedding"],
+            "looking_for_type": request["Organization looking 1"]
+        })
+
+        if not matches_response.get("matches"):
+            raise HTTPException(status_code=500, detail="No matches found")
+
+        # 6. 评估匹配
+        evaluated_matches = []  # 存储已评估且匹配的
+        unmatched = []  # 存储已评估但不匹配的
+        unevaluated_matches = []  # 存储剩余未评估的80个
+        final_matches = []
+        
+        # 处理前20个匹配
+        first_twenty = matches_response["matches"][:20]
+        remaining_matches = matches_response["matches"][20:]
+        
+        for match in first_twenty:
+            try:
+                # 1. 验证和转换ObjectId - 与get_company_details相同
+                try:
+                    object_id = ObjectId(match[14])
+                except Exception as e:
+                    print(f"Invalid ObjectId format: {str(e)}")
+                    continue
+
+                # 2. 在两个集合中查找 - 与get_company_details相同
+                org = nonprofit_collection.find_one({"_id": object_id})
+                collection_type = "Non Profit"
+                
+                if not org:
+                    org = forprofit_collection.find_one({"_id": object_id})
+                    collection_type = "For-Profit"
+                
+                if not org:
+                    print(f"Company not found for id: {object_id}")
+                    continue
+
+                # 3. 构建匹配结果
+                match_result = {
+                    "similarity_score": float(match[0]),
+                    "organization": {
+                        # 基础信息 - 使用MongoDB中的确切字段名
+                        "Name": org.get("Name"),
+                        "Description": org.get("Description"),
+                        "Address": org.get("Address"),
+                        "City": org.get("City"),
+                        "State": org.get("State"),
+                        "Code": org.get("Code"),
+                        "URL": org.get("URL"),
+                        
+                        # LinkedIn信息 - 保持原有字段名
+                        "linkedin_url": org.get("linkedin_url"),
+                        "linkedin_tagline": org.get("linkedin_tagline"),
+                        "linkedin_industries": org.get("linkedin_industries"),
+                        "linkedin_specialities": org.get("linkedin_specialities"),
+                        "linkedin_staff_range": org.get("linkedin_staff_range"),
+                        "linkedin_follower_count": org.get("linkedin_follower_count"),
+                        "linkedin_logo": org.get("linkedin_logo"),
+                        "linkedin_crunchbase": org.get("linkedin_crunchbase"),
+                        
+                        # 组织特定字段 - 保持原有字段名
+                        **({"contribution": org.get("contribution"),
+                            "csr_page_link": org.get("csr_page_link")} 
+                           if collection_type == "For-Profit" else
+                           {"partnership": org.get("partnership"),
+                            "event": org.get("event"),
+                            "website_event": org.get("website_event"),
+                            "website_partnership": org.get("website_partnership")})
+                    }
+                }
+                unevaluated_matches.append(match_result)
+                
+            except Exception as e:
+                print(f"Error processing unevaluated match: {str(e)}")
+                continue
+
+        # 构建最终的20个匹配
+        # 首先添加所有已评估且匹配的
+        final_matches = evaluated_matches.copy()
+        # 如果不够20个，从未评估的中按相似度补充
+        if len(final_matches) < 20:
+            remaining_needed = 20 - len(final_matches)
+            final_matches.extend(unevaluated_matches[:remaining_needed])
+
+        matching_results = {
+            "successful_matches": [
+                {
+                    "similarity_score": match.get("similarity_score"),
+                    "organization": {
+                        # 基础信息 - 使用MongoDB中的确切字段名
+                        "Name": match.get("organization", {}).get("Name"),
+                        "Description": match.get("organization", {}).get("Description"),
+                        "Address": match.get("organization", {}).get("Address"),
+                        "City": match.get("organization", {}).get("City"),
+                        "State": match.get("organization", {}).get("State"),
+                        "Code": match.get("organization", {}).get("Code"),
+                        "URL": match.get("organization", {}).get("URL"),
+                        
+                        # LinkedIn信息 - 保持原有字段名
+                        "linkedin_url": match.get("organization", {}).get("linkedin_url"),
+                        "linkedin_tagline": match.get("organization", {}).get("linkedin_tagline"),
+                        "linkedin_industries": match.get("organization", {}).get("linkedin_industries"),
+                        "linkedin_specialities": match.get("organization", {}).get("linkedin_specialities"),
+                        "linkedin_staff_range": match.get("organization", {}).get("linkedin_staff_range"),
+                        "linkedin_follower_count": match.get("organization", {}).get("linkedin_follower_count"),
+                        "linkedin_logo": match.get("organization", {}).get("linkedin_logo"),
+                        "linkedin_crunchbase": match.get("organization", {}).get("linkedin_crunchbase"),
+                        
+                        # 组织特定字段 - 保持原有字段名
+                        **({"contribution": match.get("organization", {}).get("contribution"),
+                            "csr_page_link": match.get("organization", {}).get("csr_page_link")} 
+                           if match.get("organization", {}).get("type") == "For-Profit" else
+                           {"partnership": match.get("organization", {}).get("partnership"),
+                            "event": match.get("organization", {}).get("event"),
+                            "website_event": match.get("organization", {}).get("website_event"),
+                            "website_partnership": match.get("organization", {}).get("website_partnership")})
+                    },
+                    "evaluation": {
+                        "is_match": match.get("evaluation", {}).get("is_match", True)
+                    }
+                }
+                for match in final_matches
+            ]
+        }
+        
+        response = {
+            "status": "success",
+            "process_steps": {
+                "step1_input_organization": {
+                    "name": request["Name"],
+                    "type": request["Type"],
+                    "description": request["Description"],
+                    "target_audience": request["Target Audience"],
+                    "looking_for": request["Organization looking 1"],
+                    "partnership_description": request["Organization looking 2"]
+                },
+                "step2_suggested_organizations": {
+                    "generated": orgs_response["generated_organizations"],
+                    "filtered": orgs_response["filtered_organizations"]
+                },
+                "step3_generated_tags": {
+                    "tags": tags_response["tags"],
+                    "tags_string": tags_response["tags_string"]
+                },
+                "step4_embedding": {
+                    "dimension": len(embedding_response["embedding"]),
+                    "embedding_sample": embedding_response["embedding"][:5]
+                },
+                "step5_initial_matches": {
+                    "total_matches_found": len(matches_response["matches"]),
+                    "matches_processed": 20
+                },
+                "step6_match_evaluation": {
+                    "total_matches_found": len(matches_response["matches"]),
+                    "evaluated_count": 20,
+                    "matched_count": len(evaluated_matches),
+                    "unmatched_count": len(unmatched),
+                    "unevaluated_count": 80,
+                    "final_matches_count": 20
+                }
+            },
+            "matching_results": matching_results
+        }
+        
+        return response
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail={
+                "error": str(e),
+                "step": "complete_matching_process",
+                "message": "Error in matching process"
+            }
+        )
+        
+# 高层整合API
 @app.post("/test/complete-matching-process")
 async def complete_matching_process(request: Dict):
     """完整的匹配流程API"""
@@ -673,6 +893,7 @@ async def complete_matching_process(request: Dict):
                 "message": "Error in matching process"
             }
         )
+
 
 @app.get("/test/company/{company_id}")
 async def get_company_details(company_id: str):
@@ -907,7 +1128,7 @@ async def analyze_match_reasons(request: Dict):
         # 获取组织数据
         match_org_id = ObjectId(request["match_org"].get("_id"))
         detailed_org = nonprofit_collection.find_one({"_id": match_org_id})
-        org_type = "Non Profit"
+        org_type = "Non-Profit"
         
         if not detailed_org:
             detailed_org = forprofit_collection.find_one({"_id": match_org_id})
@@ -1046,7 +1267,7 @@ async def get_openai_analysis(prompt: str, system_role: str) -> dict:
     """Helper function for OpenAI API calls"""
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
+            model="gpt-4",
             messages=[
                 {"role": "system", "content": system_role},
                 {"role": "user", "content": prompt}
@@ -1063,7 +1284,6 @@ async def get_openai_analysis(prompt: str, system_role: str) -> dict:
             status_code=500,
             detail=f"OpenAI API error: {str(e)}"
         )
-
 @app.post("/test/generate/ad-campaign", response_model=AdCampaignResponse)
 async def generate_ad_campaign(request: AdCampaignRequest):
     """生成广告活动的API"""
