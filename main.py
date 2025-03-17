@@ -128,10 +128,10 @@ class CompanyResponse(BaseModel):
     # 特定类型字段
     contribution: Optional[str] = None  # For-Profit
     csr_page_link: Optional[str] = None  # For-Profit
-    partnership: Optional[str] = None  # Non-Profit
-    website_event: Optional[str] = None  # Non-Profit
-    website_partnership: Optional[str] = None  # Non-Profit
-    website_scrape: Optional[str] = None  # Non-Profit
+    partnership: Optional[str] = None  # Non Profit
+    website_event: Optional[str] = None  # Non Profit
+    website_partnership: Optional[str] = None  # Non Profit
+    website_scrape: Optional[str] = None  # Non Profit
     
     class Config:
         populate_by_name = True
@@ -838,7 +838,7 @@ def test_complete_matching():
                     value = org.get(api_field)
                     print(f"{db_field}: {'Present' if value is not None else 'Missing'}")
             else:
-                print("\nNon-Profit Specific Fields:")
+                print("\nNon Profit Specific Fields:")
                 for db_field, api_field in field_mapping["non_profit_only"].items():
                     value = org.get(api_field)
                     print(f"{db_field}: {'Present' if value is not None else 'Missing'}")
@@ -907,7 +907,7 @@ async def analyze_match_reasons(request: Dict):
         # 获取组织数据
         match_org_id = ObjectId(request["match_org"].get("_id"))
         detailed_org = nonprofit_collection.find_one({"_id": match_org_id})
-        org_type = "Non-Profit"
+        org_type = "Non Profit"
         
         if not detailed_org:
             detailed_org = forprofit_collection.find_one({"_id": match_org_id})
@@ -1046,7 +1046,7 @@ async def get_openai_analysis(prompt: str, system_role: str) -> dict:
     """Helper function for OpenAI API calls"""
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_role},
                 {"role": "user", "content": prompt}
