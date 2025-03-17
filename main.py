@@ -735,64 +735,74 @@ async def complete_matching_process(request: Dict):
         remaining_matches = matches_response["matches"][20:]
         
         for match in first_twenty:
-            try:
-                # 1. 验证和转换ObjectId - 与get_company_details相同
-                try:
-                    object_id = ObjectId(match[14])
-                except Exception as e:
-                    print(f"Invalid ObjectId format: {str(e)}")
-                    continue
+            evaluation_request = {
+                "user_info": {
+                    "Type": request["Type"],
+                    "Description": request["Description"],
+                    "Target Audience": request["Target Audience"],
+                    "Organization looking 1": request["Organization looking 1"],
+                    "Organization looking 2": request["Organization looking 2"]
+                },
+                "match_info": match
+            }
 
-                # 2. 在两个集合中查找 - 与get_company_details相同
-                org = nonprofit_collection.find_one({"_id": object_id})
-                collection_type = "Non Profit"
-                
-                if not org:
-                    org = forprofit_collection.find_one({"_id": object_id})
-                    collection_type = "For-Profit"
-                
-                if not org:
-                    print(f"Company not found for id: {object_id}")
-                    continue
-
-                # 3. 构建匹配结果
-                match_result = {
-                    "similarity_score": float(match[0]),
-                    "organization": {
-                        # 基础信息 - 使用MongoDB中的确切字段名
-                        "Name": org.get("Name"),
-                        "Description": org.get("Description"),
-                        "Address": org.get("Address"),
-                        "City": org.get("City"),
-                        "State": org.get("State"),
-                        "Code": org.get("Code"),
-                        "URL": org.get("URL"),
-                        
-                        # LinkedIn信息 - 保持原有字段名
-                        "linkedin_url": org.get("linkedin_url"),
-                        "linkedin_tagline": org.get("linkedin_tagline"),
-                        "linkedin_industries": org.get("linkedin_industries"),
-                        "linkedin_specialities": org.get("linkedin_specialities"),
-                        "linkedin_staff_range": org.get("linkedin_staff_range"),
-                        "linkedin_follower_count": org.get("linkedin_follower_count"),
-                        "linkedin_logo": org.get("linkedin_logo"),
-                        "linkedin_crunchbase": org.get("linkedin_crunchbase"),
-                        
-                        # 组织特定字段 - 保持原有字段名
-                        **({"contribution": org.get("contribution"),
-                            "csr_page_link": org.get("csr_page_link")} 
-                           if collection_type == "For-Profit" else
-                           {"partnership": org.get("partnership"),
-                            "event": org.get("event"),
-                            "website_event": org.get("website_event"),
-                            "website_partnership": org.get("website_partnership")})
-                    }
+            evaluation = await evaluate_match_api(evaluation_request)
+            
+            match_result = {
+                "similarity_score": float(match[0]),
+                "organization": {
+                    "name": match[1],
+                    "description": match[2],
+                    "url": match[3],
+                    "linkedin_description": match[4],
+                    "linkedin_tagline": match[5],
+                    "type": match[6],
+                    "industries": match[7],
+                    "specialities": match[8],
+                    "staff_count": match[9],
+                    "city": match[10],
+                    "state": match[11],
+                    "linkedin_url": match[12],
+                    "tags": match[13]
                 }
-                unevaluated_matches.append(match_result)
-                
-            except Exception as e:
-                print(f"Error processing unevaluated match: {str(e)}")
-                continue
+            }
+
+            if evaluation.get("is_match"):
+                match_result["evaluation"] = {
+                    "is_match": True
+                }
+                evaluated_matches.append(match_result)
+            else:
+                match_result["evaluation"] = {
+                    "is_match": False
+                }
+                unmatched.append(match_result)
+
+        # 处理剩余80个未评估的匹配
+        for match in remaining_matches:
+            match_result = {
+                "similarity_score": float(match[0]),
+                "organization": {
+                    "name": match[1],
+                    "description": match[2],
+                    "url": match[3],
+                    "linkedin_description": match[4],
+                    "linkedin_tagline": match[5],
+                    "type": match[6],
+                    "industries": match[7],
+                    "specialities": match[8],
+                    "staff_count": match[9],
+                    "city": match[10],
+                    "state": match[11],
+                    "linkedin_url": match[12],
+                    "tags": match[13]
+                },
+                "evaluation": {
+                    "is_match": None,  # 表示未评估
+                    "note": "Not evaluated, ranked by similarity score"
+                }
+            }
+            unevaluated_matches.append(match_result)
 
         # 构建最终的20个匹配
         # 首先添加所有已评估且匹配的
@@ -807,33 +817,40 @@ async def complete_matching_process(request: Dict):
                 {
                     "similarity_score": match.get("similarity_score"),
                     "organization": {
-                        # 基础信息 - 使用MongoDB中的确切字段名
-                        "Name": match.get("organization", {}).get("Name"),
-                        "Description": match.get("organization", {}).get("Description"),
-                        "Address": match.get("organization", {}).get("Address"),
-                        "City": match.get("organization", {}).get("City"),
-                        "State": match.get("organization", {}).get("State"),
-                        "Code": match.get("organization", {}).get("Code"),
-                        "URL": match.get("organization", {}).get("URL"),
+                        # 基础信息
+                        "name": match.get("organization", {}).get("name"),
+                        "description": match.get("organization", {}).get("description"),
+                        "address": match.get("organization", {}).get("address"),
+                        "city": match.get("organization", {}).get("city"),
+                        "state": match.get("organization", {}).get("state"),
+                        "code": match.get("organization", {}).get("code"),
+                        "url": match.get("organization", {}).get("url"),
                         
-                        # LinkedIn信息 - 保持原有字段名
+                        # LinkedIn 信息
                         "linkedin_url": match.get("organization", {}).get("linkedin_url"),
                         "linkedin_tagline": match.get("organization", {}).get("linkedin_tagline"),
-                        "linkedin_industries": match.get("organization", {}).get("linkedin_industries"),
-                        "linkedin_specialities": match.get("organization", {}).get("linkedin_specialities"),
-                        "linkedin_staff_range": match.get("organization", {}).get("linkedin_staff_range"),
-                        "linkedin_follower_count": match.get("organization", {}).get("linkedin_follower_count"),
-                        "linkedin_logo": match.get("organization", {}).get("linkedin_logo"),
-                        "linkedin_crunchbase": match.get("organization", {}).get("linkedin_crunchbase"),
+                        "linkedin_type": match.get("organization", {}).get("type"),
+                        "linkedin_industries": match.get("organization", {}).get("industries"),
+                        "linkedin_specialities": match.get("organization", {}).get("specialities"),
+                        "linkedin_staff_range": match.get("organization", {}).get("staff_range"),
+                        "linkedin_follower_count": match.get("organization", {}).get("follower_count"),
+                        "linkedin_logo": match.get("organization", {}).get("logo"),
+                        "linkedin_crunchbase": match.get("organization", {}).get("crunchbase"),
                         
-                        # 组织特定字段 - 保持原有字段名
+                        # 财务信息
+                        "assets_usd": match.get("organization", {}).get("assets_usd"),
+                        "employees_total": match.get("organization", {}).get("employees_total"),
+                        "pre_tax_profit_usd": match.get("organization", {}).get("pre_tax_profit_usd"),
+                        "sales_usd": match.get("organization", {}).get("sales_usd"),
+                        
+                        # 根据组织类型的特定字段
                         **({"contribution": match.get("organization", {}).get("contribution"),
                             "csr_page_link": match.get("organization", {}).get("csr_page_link")} 
                            if match.get("organization", {}).get("type") == "For-Profit" else
                            {"partnership": match.get("organization", {}).get("partnership"),
-                            "event": match.get("organization", {}).get("event"),
                             "website_event": match.get("organization", {}).get("website_event"),
-                            "website_partnership": match.get("organization", {}).get("website_partnership")})
+                            "website_partnership": match.get("organization", {}).get("website_partnership"),
+                            "event": match.get("organization", {}).get("event")})
                     },
                     "evaluation": {
                         "is_match": match.get("evaluation", {}).get("is_match", True)
@@ -893,7 +910,6 @@ async def complete_matching_process(request: Dict):
                 "message": "Error in matching process"
             }
         )
-
 
 
 @app.get("/test/company/{company_id}")
