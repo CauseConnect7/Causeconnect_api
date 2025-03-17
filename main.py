@@ -916,17 +916,24 @@ async def analyze_match_reasons(request: Dict):
         if not detailed_org:
             raise HTTPException(status_code=404, detail="Organization not found")
 
-        # 第一阶段：价值匹配分析
+        # Stage 1: Value Alignment Analysis
         alignment_analysis_prompt = f"""
         Analyze value alignment between {detailed_org.get('Name')} and {request['user_org'].get('Name')}:
 
-        Organization Identity:
-        - About: {detailed_org.get('about')}
-        - LinkedIn Description: {detailed_org.get('linkedin_description')}
-        - LinkedIn Tagline: {detailed_org.get('linkedin_tagline')}
-        - Industries: {detailed_org.get('linkedin_industries')}
-        - Specialties: {detailed_org.get('linkedin_specialities')}
-        - Description: {detailed_org.get('Description')}
+        User Organization Information:
+        - Name: {request['user_org'].get('Name')}
+        - Type: {request['user_org'].get('Type')}
+        - Description: {request['user_org'].get('Description', '')}
+        - Target Audience: {request['user_org'].get('Target Audience', '')}
+        - Partnership Goals: {request['user_org'].get('Organization looking 2', '')}
+
+        Matching Organization Identity:
+        - About: {detailed_org.get('about', '')}
+        - LinkedIn Description: {detailed_org.get('linkedin_description', '')}
+        - LinkedIn Tagline: {detailed_org.get('linkedin_tagline', '')}
+        - Industries: {detailed_org.get('linkedin_industries', '')}
+        - Specialties: {detailed_org.get('linkedin_specialities', '')}
+        - Description: {detailed_org.get('Description', '')}
 
         Provide analysis in JSON format focusing on:
         1. Strategic alignment of missions
@@ -934,23 +941,29 @@ async def analyze_match_reasons(request: Dict):
         3. Market positioning alignment
         """
 
-        # 第二阶段：活动模式分析
+        # Stage 2: Activity Pattern Analysis
         activity_analysis_prompt = f"""
         Analyze activity patterns and focus areas:
 
+        User Organization Profile:
+        - Description: {request['user_org'].get('Description', '')}
+        - Target Audience: {request['user_org'].get('Target Audience', '')}
+        - Partnership Goals: {request['user_org'].get('Organization looking 2', '')}
+
+        Matching Organization Activities:
         {'Corporate Social Responsibility:' if org_type == "For-Profit" else 'Partnership History:'}
-        {detailed_org.get('contribution') if org_type == "For-Profit" else detailed_org.get('partnership')}
+        {detailed_org.get('contribution', '') if org_type == "For-Profit" else detailed_org.get('partnership', '')}
 
         Activity Records:
-        - Events: {detailed_org.get('event')}
-        - Partnership Programs: {detailed_org.get('website_partnership')}
-        - Event Programs: {detailed_org.get('website_event')}
-        - CSR Programs: {detailed_org.get('csr_page_link')}
+        - Events: {detailed_org.get('event', '')}
+        - Partnership Programs: {detailed_org.get('website_partnership', '')}
+        - Event Programs: {detailed_org.get('website_event', '')}
+        - CSR Programs: {detailed_org.get('csr_page_link', '')}
 
         Focus Areas:
-        - Industries: {detailed_org.get('linkedin_industries')}
-        - Specialties: {detailed_org.get('linkedin_specialities')}
-        - Description: {detailed_org.get('Description')}
+        - Industries: {detailed_org.get('linkedin_industries', '')}
+        - Specialties: {detailed_org.get('linkedin_specialities', '')}
+        - Description: {detailed_org.get('Description', '')}
 
         Provide JSON analysis of:
         1. Primary Focus Areas
@@ -958,28 +971,34 @@ async def analyze_match_reasons(request: Dict):
         3. Activity Patterns
         """
 
-        # 第三阶段：能力评估
+        # Stage 3: Capability Assessment
         capability_analysis_prompt = f"""
         Analyze organizational capabilities:
 
+        User Organization Requirements:
+        - Type: {request['user_org'].get('Type', '')}
+        - Target Audience: {request['user_org'].get('Target Audience', '')}
+        - Partnership Goals: {request['user_org'].get('Organization looking 2', '')}
+
+        Matching Organization Metrics:
         Scale Metrics:
-        - Staff Count: {detailed_org.get('linkedin_staff_count')}
-        - Staff Range: {detailed_org.get('linkedin_staff_range')}
-        - Total Employees: {detailed_org.get('Employees (Total)')}
-        - Location: {detailed_org.get('City')}, {detailed_org.get('State')}
+        - Staff Count: {detailed_org.get('linkedin_staff_count', '')}
+        - Staff Range: {detailed_org.get('linkedin_staff_range', '')}
+        - Total Employees: {detailed_org.get('Employees (Total)', '')}
+        - Location: {detailed_org.get('City', '')}, {detailed_org.get('State', '')}
 
         Financial Indicators:
-        - Annual Sales: {detailed_org.get('Sales (USD)')}
-        - Assets: {detailed_org.get('Assets (USD)')}
-        - Pre Tax Profit: {detailed_org.get('Pre Tax Profit (USD)')}
-        - Market Presence: {detailed_org.get('linkedin_follower_count')} LinkedIn followers
+        - Annual Sales: {detailed_org.get('Sales (USD)', '')}
+        - Assets: {detailed_org.get('Assets (USD)', '')}
+        - Pre Tax Profit: {detailed_org.get('Pre Tax Profit (USD)', '')}
+        - Market Presence: {detailed_org.get('linkedin_follower_count', '')} LinkedIn followers
 
         Provide JSON analysis of:
         1. Resource Capacity
         2. Implementation Capability
         3. Partnership Readiness
         """
-
+        
         # 执行三阶段分析
         try:
             # 阶段1：价值匹配分析
@@ -1044,55 +1063,6 @@ async def get_openai_analysis(prompt: str, system_role: str) -> dict:
             status_code=500,
             detail=f"OpenAI API error: {str(e)}"
         )
-
-@app.post("/test/analyze/match-risks")
-async def analyze_match_risks(request: Dict):
-    """分析匹配风险的API"""
-    try:
-        if not all(key in request for key in ["user_org", "match_org"]):
-            raise HTTPException(status_code=400, detail="Missing required fields")
-            
-        openai.api_key = os.getenv("OPENAI_API_KEY")
-        
-        prompt = f"""
-        Based on the following information, identify potential risks or challenges in this partnership:
-        
-        User Organization:
-        - Description: {request["user_org"].get('Description')}
-        - Target Audience: {request["user_org"].get('Target Audience')}
-        
-        Potential Partner:
-        - Name: {request["match_org"].get('name')}
-        - Description: {request["match_org"].get('description')}
-        - Type: {request["match_org"].get('type')}
-        - Industries: {request["match_org"].get('industries')}
-        - Specialties: {request["match_org"].get('specialities')}
-        
-        Please provide 2-3 key points about potential risks or challenges to consider.
-        Focus on:
-        1. Operational challenges
-        2. Market and brand alignment risks
-        3. Resource and capability gaps
-        
-        Format your response in clear, concise bullet points.
-        """
-        
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are an expert in risk analysis for organizational partnerships."},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        
-        return {
-            "status": "success",
-            "analysis": response.choices[0].message['content'].strip()
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/test/generate/ad-campaign", response_model=AdCampaignResponse)
 async def generate_ad_campaign(request: AdCampaignRequest):
