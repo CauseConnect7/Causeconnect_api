@@ -539,7 +539,8 @@ async def complete_matching_process(request: Dict):
                 match_result = {
                     "similarity_score": float(match[0]),
                     "organization": {
-                        # 基础信息 - 使用MongoDB中的确切字段名
+                        "_id": str(object_id),
+                        # 基础信息
                         "Name": org.get("Name"),
                         "Description": org.get("Description"),
                         "Address": org.get("Address"),
@@ -587,7 +588,8 @@ async def complete_matching_process(request: Dict):
                 {
                     "similarity_score": match.get("similarity_score"),
                     "organization": {
-                        # 基础信息 - 使用MongoDB中的确切字段名
+                        "_id": match.get("organization", {}).get("_id"),
+                        # 基础信息
                         "Name": match.get("organization", {}).get("Name"),
                         "Description": match.get("organization", {}).get("Description"),
                         "Address": match.get("organization", {}).get("Address"),
@@ -673,6 +675,7 @@ async def complete_matching_process(request: Dict):
                 "message": "Error in matching process"
             }
         )
+
         
 # 高层整合API
 @app.post("/test/complete-matching-process")
