@@ -868,7 +868,7 @@ def generate_structured_tags(description: str) -> Dict:
         for step in range(1, 7):
             step_description = os.getenv(f"TAG_STEP_{step}")
             response = openai.ChatCompletion.create(
-                model="gpt-4o-mini",
+                model="gpt-4",
                 messages=[
                     {"role": "system", "content": os.getenv("PROMPT_TAGS_SYSTEM").format(
                         total_tags=5,
