@@ -895,6 +895,7 @@ async def complete_matching_process(request: Dict):
         )
 
 
+
 @app.get("/test/company/{company_id}")
 async def get_company_details(company_id: str):
     """Get company details from database."""
