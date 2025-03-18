@@ -389,7 +389,7 @@ async def find_matches_api(request: Dict):
             raise HTTPException(status_code=400, detail="Missing required fields")
             
         matches = []
-        collection = nonprofit_collection if request["looking_for_type"].strip() == os.getenv("MONGODB_COLLECTION_NONPROFIT").strip() else forprofit_collection
+        collection = nonprofit_collection if request["looking_for_type"].strip() == "Non Profit" or request["looking_for_type"].strip().lower().replace(" ", "").replace("-", "") in ["nonprofit", "nonprofits", "nonProfit", "non profit"] else forprofit_collection
         
         for org in collection.find({"Embedding": {"$exists": True}}):
             if org.get("Embedding"):
